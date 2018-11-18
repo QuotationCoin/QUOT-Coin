@@ -1,0 +1,12 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=Quotation
+Comment=Quotation P2P Cryptocurrency
+Comment[fr]=Quotation, monnaie virtuelle cryptographique pair à pair
+Comment[tr]=Quotation, eşten eşe kriptografik sanal para birimi
+Exec=quotation-qt %u
+Terminal=false
+Type=Application
+Icon=quotation128
+MimeType=x-scheme-handler/quotation;
+Categories=Office;Finance;
