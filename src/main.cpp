@@ -2584,7 +2584,6 @@ bool DisconnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex
                 coins->vout[out.n] = undo.txout;
 
                 // erase the spent input
-                if(IsSporkActive(SPORK_17_FAKE_STAKE_FIX) && block.GetBlockTime() >= GetSporkValue(SPORK_17_FAKE_STAKE_FIX))
                     mapStakeSpent.erase(out);
             }
         }
@@ -3060,25 +3059,24 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         if (!pblocktree->WriteTxIndex(vPos))
             return state.Abort("Failed to write transaction index");
 
-    if(IsSporkActive(SPORK_17_FAKE_STAKE_FIX) && block.GetBlockTime() >= GetSporkValue(SPORK_17_FAKE_STAKE_FIX)){
-        // add new entries
-        for (const CTransaction tx:block.vtx) {
-            if (tx.IsCoinBase())
-                continue;
-            for (const CTxIn in: tx.vin) {
-                LogPrint("map", "mapStakeSpent: Insert %s | %u\n", in.prevout.ToString(), pindex->nHeight);
-                mapStakeSpent.insert(std::make_pair(in.prevout, pindex->nHeight));
-            }
+    // add new entries
+    for (const CTransaction tx: block.vtx) {
+        if (tx.IsCoinBase())
+            continue;
+        for (const CTxIn in: tx.vin) {
+            if (fDebug) LogPrintf("mapStakeSpent: Insert %s | %u\n", in.prevout.ToString(), pindex->nHeight);
+            mapStakeSpent.insert(std::make_pair(in.prevout, pindex->nHeight));
         }
+    }
 
-        // delete old entries
-        for (auto it = mapStakeSpent.begin(); it != mapStakeSpent.end();) {
-            if (it->second < pindex->nHeight - Params().MaxReorganizationDepth()) {
-                LogPrint("map", "mapStakeSpent: Erase %s | %u\n", it->first.ToString(), it->second);
-                it = mapStakeSpent.erase(it);
-            } else {
-                it++;
-            }
+    // delete old entries
+    for (auto it = mapStakeSpent.begin(); it != mapStakeSpent.end();) {
+        if (it->second < pindex->nHeight - Params().MaxReorganizationDepth()) {
+            if (fDebug) LogPrintf("mapStakeSpent: Erase %s | %u\n", it->first.ToString(), it->second);
+            it = mapStakeSpent.erase(it);
+        }
+        else {
+            it++;
         }
     }
 
@@ -3614,7 +3612,6 @@ bool ActivateBestChain(CValidationState& state, CBlock* pblock, bool fAlreadyChe
             uiInterface.NotifyBlockTip(hashNewTip);
         }
     } while (pindexMostWork != chainActive.Tip());
-    CheckBlockIndex();
 
     // Write changes periodically to disk, after relay.
     if (!FlushStateToDisk(state, FLUSH_STATE_PERIODIC)) {
@@ -4248,55 +4245,57 @@ bool AcceptBlock(CBlock& block, CValidationState& state, CBlockIndex** ppindex, 
 
     int nHeight = pindex->nHeight;
 
-    if(IsSporkActive(SPORK_17_FAKE_STAKE_FIX) && block.GetBlockTime() >= GetSporkValue(SPORK_17_FAKE_STAKE_FIX)) {
+    if (block.IsProofOfStake()) {
 
-        if (block.IsProofOfStake()) {
-            LOCK(cs_main);
+        int64_t nStartTime = GetTimeMillis();
 
-            CCoinsViewCache coins(pcoinsTip);
+        LOCK(cs_main);
 
-            if (!coins.HaveInputs(block.vtx[1])) {
-                // the inputs are spent at the chain tip so we should look at the recently spent outputs
+        CCoinsViewCache coins(pcoinsTip);
 
-                for (CTxIn in : block.vtx[1].vin) {
-                    auto it = mapStakeSpent.find(in.prevout);
-                    if (it == mapStakeSpent.end()) {
-                        return false;
-                    }
-                    if (it->second <= pindexPrev->nHeight) {
-                        return false;
-                    }
+        if (!coins.HaveInputs(block.vtx[1])) {
+            // the inputs are spent at the chain tip so we should look at the recently spent outputs
+
+            for (CTxIn in : block.vtx[1].vin) {
+                auto it = mapStakeSpent.find(in.prevout);
+                if (it == mapStakeSpent.end()) {
+                    return false;
                 }
-            }
-
-            // if this is on a fork
-            if (!chainActive.Contains(pindexPrev) && pindexPrev != NULL) {
-                // start at the block we're adding on to
-                CBlockIndex *last = pindexPrev;
-
-                //while that block is not on the main chain
-                while (!chainActive.Contains(last) && pindexPrev != NULL) {
-                    CBlock bl;
-                    ReadBlockFromDisk(bl, last);
-                    // loop through every spent input from said block
-                    for (CTransaction t: bl.vtx) {
-                        for (CTxIn in: t.vin) {
-                            // loop through every spent input in the staking transaction of the new block
-                            for (CTxIn stakeIn: block.vtx[1].vin) {
-                                // if they spend the same input
-                                if (stakeIn.prevout == in.prevout) {
-                                    //reject the block
-                                    return false;
-                                }
-                            }
-                        }
-                    }
-
-                    // go to the parent block
-                    last = pindexPrev->pprev;
+                if (it->second < pindexPrev->nHeight) {
+                    return false;
                 }
             }
         }
+
+        // if this is on a fork
+        if (!chainActive.Contains(pindexPrev)) {
+            // start at the block we're adding on to
+            CBlockIndex *last = pindexPrev;
+
+            // while that block is not on the main chain
+            while (!chainActive.Contains(last) && last != NULL) {
+                CBlock bl;
+                ReadBlockFromDisk(bl, last);
+                // loop through every spent input from said block
+                for (CTransaction t : bl.vtx) {
+                    for (CTxIn in: t.vin) {
+                        // loop through every spent input in the staking transaction of the new block
+                        for (CTxIn stakeIn : block.vtx[1].vin) {
+                            // if they spend the same input
+                            if (stakeIn.prevout == in.prevout) {
+                                // reject the block
+                                return false;
+                            }
+                        }
+                    }
+                }
+
+                // go to the parent block
+                last = last->pprev;
+            }
+        }
+
+        LogPrintf("Stake txchecks took %dms\n", (GetTimeMillis() - nStartTime));
     }
 
     // Write block to history file
